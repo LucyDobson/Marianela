@@ -1,0 +1,665 @@
+---
+title: "Marianela Visualizations"
+author: "Julia Martin"
+date: "2026-06-10"
+output:
+    output: rmdformats::readthedown
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning=FALSE)
+
+library(tidyverse)
+library(stringr)
+library(paletteer)
+library(plotly)
+library(RColorBrewer)
+
+```
+
+## Altered vcd2df Function
+
+```{r}
+vcd2df_altered <- function(f_name, format) {
+  # Basically, do some hacks to read line-by-line, and skip to the good part (vars)
+  if (format != 'wide' && format != 'long') {
+    stop("Please enter either 'long' or 'wide'")
+  }
+  
+  fptr <- file(f_name, "r")
+  line <- readLines(fptr, n = 1)
+  
+  # Read the variables and perform a few transposes
+  # We need vars to rename the rows latter, but easier to use aliases atm.
+  vars <- list()
+  while (!grepl("\\$enddefinitions", line)) {
+    if (!grepl("\\$scope", line)) {
+      line <- readLines(fptr, n = 1)
+    }
+    if (grepl("var", line)) {
+      # get the name and encoding and save it, if novel
+      # we assume same named vars if different modules are redundant
+      parts <- strsplit(line, " ")[[1]]
+      if (!parts[4] %in% vars) {
+        vars[[parts[5]]] <- parts[4]
+      }
+    }
+    line <- readLines(fptr, n = 1)
+  }
+  # We make a df to store a time point
+  t_n <- rep(-1, length(vars))
+  names(t_n) <- vars
+  df <- data.frame(t_n)
+  
+  repeat {
+    line <- readLines(fptr, n = 1)
+    if (length(line) == 0 || grepl("\\$dumpvars", line)) break
+  }
+
+  # Now we have the variables, we can read the dumpvars
+  # We know there's a #0 somewhere, so...
+  time <- '#0'
+  while (TRUE) {
+    while (length(line) > 0 && substring(line, 1, 1) != "#") {
+      # lines either store a bit or a word, we parse differently
+      if (grepl(" ", line)) { 
+        # word
+        parts <- strsplit(substring(line, 2), " ")[[1]]
+        val <- parts[1]
+        var <- trimws(parts[2])
+      } else { 
+        # bit
+        val <- substring(line, 1, 1)
+        var <- trimws(substring(line, 2))
+      }
+      # once parsed, verify its a unique register then store it
+      if (var %in% names(t_n)) {
+        # special case - just log non-numerics as -1
+        # mostly happens during initialization
+        if (grepl("^[0-9]+$", val)) {
+          t_n[var] <- as.integer(strtoi(val, base = 2))
+        } else {
+          t_n[var] <- -1
+        }
+      }
+      line <- readLines(fptr, n = 1)
+    }
+    # We have to update or single tick df and our result df, I guess
+    df$vals <- t_n
+    # We name the new column by the old time, then update the time
+    names(df)[ncol(df)] <- time
+    time <- line
+    if (length(line) != 0) {
+      # If we got another timestamp, we proceed.
+      line <- readLines(fptr, n = 1)
+    } else {
+        close(fptr)
+        rownames(df) <- names(vars)
+        break
+      }
+  }
+  
+  if (format == 'wide'){
+    return(df[, -1])
+    }
+  
+  else if (format == 'long') {
+  long_df = df[, -1] %>%
+    rownames_to_column() %>%
+    gather(colname, value, -rowname)
+  names(long_df) <- c("register", "timestamp", "value")
+  return(long_df)
+  }
+}
+```
+
+
+
+# Figure 1
+
+## read in data
+
+```{r}
+test_1 = vcd2df_altered("C:/Users/marin/OneDrive/Desktop/Research Articles/Marianela/vcds/alu_add_sub.vcd", "long")
+```
+
+## wrangle data
+
+```{r}
+test_1_viz = test_1 %>%
+  filter(!grepl("^shadow_", register)) %>%
+  mutate(prefix = sub("_.*", "", register)) %>%
+  group_by(prefix) %>%
+  mutate(n = n()) %>%
+  ungroup() %>%
+  mutate(percent = n/n()) %>%
+  distinct(prefix, percent) %>%
+  mutate(prefix = forcats::fct_reorder(prefix, percent, .desc = TRUE))
+```
+
+## visualize data
+
+```{r}
+test_1_viz %>% 
+  ggplot(aes(x = prefix, y = percent, fill = prefix)) +
+    geom_col() +
+    scale_y_continuous(labels = scales::percent) +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1),
+          legend.position = "none") +
+  labs(
+    title = "Figure 1: Usage of Register Pathways for All Timestamps",
+    subtitle = "Data from .vcd file 'alu_add_sub'",
+    x = "Register Prefix",
+    y = "Percent of Total Usage"
+  )
+```
+
+# Figure 2
+
+## read in data
+
+```{r}
+files_four <- list.files(
+  path = "C:/Users/marin/OneDrive/Desktop/Research Articles/Marianela/test_vcds",
+  full.names = TRUE
+)
+
+vcd_folder <- lapply(files_four, vcd2df_altered, "long")
+names(vcd_folder) <- tools::file_path_sans_ext(basename(files_four))
+list2env(vcd_folder, envir = .GlobalEnv)
+```
+
+## wrangle data
+
+```{r}
+four_vcd_df <- bind_rows(alu_add_sub, alu_eq, alu_lts, alu_ltu)
+
+four_vcd_df_viz = four_vcd_df %>%
+  filter(!grepl("^shadow_", register)) %>%
+  mutate(prefix = sub("_.*", "", register)) %>%
+  group_by(prefix) %>%
+  mutate(n = n()) %>%
+  ungroup() %>%
+  mutate(percent = n/n()) %>%
+  distinct(prefix, percent) %>%
+  mutate(prefix = forcats::fct_reorder(prefix, percent, .desc = TRUE))
+
+four_vcd_df_viz
+```
+
+## visualize data
+
+```{r}
+four_vcd_df_viz %>% 
+  ggplot(aes(x = prefix, y = percent, fill = prefix)) +
+    geom_col() +
+    scale_y_continuous(labels = scales::percent) +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1),
+          legend.position = "none") +
+  labs(
+    title = "Figure 2: Usage of Register Pathways for All Timestamps",
+    subtitle = "Data from 4 .vcd files ('alu_add_sub', 'alu_eq', 'alu_lts', 'alu_ltu')",
+    x = "Register Prefix",
+    y = "Percent of Total Usage"
+  )
+```
+
+# Figure 1.1
+
+## read in data
+
+```{r}
+test_1 = vcd2df_altered("C:/Users/marin/OneDrive/Desktop/Research Articles/Marianela/vcds/alu_add_sub.vcd", "long")
+```
+
+## wrangle data
+
+```{r}
+test_1_viz = test_1 %>%
+  filter(!grepl("^shadow_", register)) %>%
+  mutate(n_timestamp = n_distinct(timestamp)) %>%
+  filter(value != 0) %>%
+  group_by(register) %>%
+  mutate(n_value_change = n(),
+         activity = n_value_change / n_timestamp) %>%
+  distinct(register, activity) %>%
+  mutate(prefix = sub("_.*", "", register)) %>%
+  group_by(prefix) %>%
+  mutate(mean = mean(activity)) %>%
+  distinct(prefix, mean)
+
+test_1_viz %>% 
+  ggplot(aes(x = prefix, y = mean, fill = prefix)) +
+    geom_col() +
+    scale_y_continuous(labels = scales::percent) +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1),
+          legend.position = "none") +
+  labs(
+    title = "Figure 1.1: Usage of Active Register Pathways for All Timestamps",
+    subtitle = "Data from .vcd file 'alu_add_sub'",
+    x = "Register Prefix",
+    y = "Percent of Total Usage"
+  )
+```
+
+# Figure 2.1
+
+## read in data
+
+```{r}
+files_four <- list.files(
+  path = "C:/Users/marin/OneDrive/Desktop/Research Articles/Marianela/test_vcds",
+  full.names = TRUE
+)
+
+vcd_folder <- lapply(files_four, vcd2df_altered, "long")
+names(vcd_folder) <- tools::file_path_sans_ext(basename(files_four))
+list2env(vcd_folder, envir = .GlobalEnv)
+```
+
+## wrangle data
+
+```{r}
+four_vcd_df <- bind_rows(alu_add_sub, alu_eq, alu_lts, alu_ltu)
+
+four_vcd_df_viz = four_vcd_df %>%
+  filter(!grepl("^shadow_", register)) %>%
+  mutate(n_timestamp = n_distinct(timestamp) * 4) %>%
+  filter(value != 0) %>%
+  group_by(register) %>%
+  mutate(n_value_change = n(),
+         activity = n_value_change / n_timestamp) %>%
+  distinct(register, activity) %>%
+  mutate(prefix = sub("_.*", "", register)) %>%
+  group_by(prefix) %>%
+  mutate(mean = mean(activity)) %>%
+  distinct(prefix, mean)
+```
+
+## visualize data
+
+```{r}
+four_vcd_df_viz %>% 
+  ggplot(aes(x = prefix, y = mean, fill = prefix)) +
+    geom_col() +
+    scale_y_continuous(labels = scales::percent) +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1),
+          legend.position = "none") +
+  labs(
+    title = "Figure 2.1: Usage of Register Pathways for All Timestamps (4 .vcd files)",
+    subtitle = "Data from 4 .vcd files ('alu_add_sub', 'alu_eq', 'alu_lts', 'alu_ltu')",
+    x = "Register Prefix",
+    y = "Percent of Total Usage"
+  )
+```
+
+# Figure 3
+
+## read in data
+
+```{r}
+files_four <- list.files(
+  path = "C:/Users/marin/OneDrive/Desktop/Research Articles/Marianela/test_vcds",
+  full.names = TRUE
+)
+
+vcd_folder <- lapply(files_four, vcd2df_altered, "long")
+names(vcd_folder) <- tools::file_path_sans_ext(basename(files_four))
+list2env(vcd_folder, envir = .GlobalEnv)
+```
+
+
+## wrangle data
+
+```{r}
+four_vcd_df <- bind_rows(alu_add_sub, alu_eq, alu_lts, alu_ltu)
+
+df_viz <- four_vcd_df %>%
+  filter(!grepl("^shadow_", register)) %>%
+  mutate(n_timestamp = n_distinct(timestamp) * 4) %>%
+  filter(value != 0) %>%
+  group_by(register) %>%
+  mutate(n_value_change = n(),
+         activity = n_value_change / n_timestamp) %>%
+  distinct(register, activity) %>%
+  mutate(prefix = sub("_.*", "", register)) %>%
+  group_by(prefix) %>%
+  summarise(
+    mean = mean(activity),
+    n_registers = n_distinct(register),
+    min_activity = min(activity),
+    max_activity = max(activity),
+    median_activity = median(activity),
+    .groups = "drop"
+  )
+```
+
+
+## visualize data
+
+```{r}
+p <- ggplot(df_viz, aes(x = prefix, y = mean, fill = prefix,
+           text = paste0(
+             "Prefix: ", prefix, "\n",
+             "# Registers: ", n_registers, "\n",
+             "Min Activity: ", round(min_activity, 4), "\n",
+             "Max Activity: ", round(max_activity, 4), "\n",
+             "Median Activity: ", round(median_activity, 4)))) +
+    geom_col() +
+    scale_y_continuous(labels = scales::percent) +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1),
+          legend.position = "none") +
+    labs(title = "Figure 3: Usage of Register Pathways for All Timestamps",
+         subtitle = "Data from .vcd files ('alu_add_sub', 'alu_eq', 'alu_lts', 'alu_ltu')",
+         x = "Register Prefix",
+         y = "Percent of Total Usage")
+
+ggplotly(p, tooltip = "text") %>%
+  layout(
+    annotations = list(
+      list(
+        text = "Data from .vcd files ('alu_add_sub', 'alu_eq', 'alu_lts', 'alu_ltu')",
+        x = 0,
+        y = 1.035,
+        xref = "paper",
+        yref = "paper",
+        showarrow = FALSE,
+        xanchor = "left"
+      )
+    )
+  )
+```
+
+# Figure 4
+
+## read in data
+
+```{r}
+test_1 = vcd2df_altered("C:/Users/marin/OneDrive/Desktop/Research Articles/Marianela/vcds/alu_add_sub.vcd", "long")
+```
+
+## wrangle data
+
+```{r}
+test_1_viz <- test_1 %>%
+  mutate(n_timestamp = n_distinct(timestamp)) %>%
+  filter(value != 0) %>%
+  filter(!grepl("^shadow_", register)) %>%
+  group_by(register) %>%
+  mutate(n_value_change = n(),
+         activity = n_value_change / n_timestamp,
+         prefix = sub("_.*", "", register)) %>%
+  ungroup() %>%
+  group_by(prefix) %>%
+  summarise(
+    mean = mean(activity),
+    n_registers = n_distinct(register),
+    min_activity = min(activity),
+    max_activity = max(activity),
+    median_activity = median(activity),
+    .groups = "drop")
+```
+
+## visualize data
+
+```{r}
+p <- ggplot(test_1_viz, aes(x = prefix, y = mean, fill = n_registers,
+           text = paste0(
+             "Prefix: ", prefix, "\n",
+             "# sub-Registers: ", n_registers, "\n",
+             "Min Activity: ", round(min_activity, 4), "\n",
+             "Max Activity: ", round(max_activity, 4), "\n",
+             "Median Activity: ", round(median_activity, 4)))) +
+    geom_col() +
+    scale_fill_gradient(low = "darkgrey", high = "darkred") +
+    scale_y_continuous(labels = scales::percent) +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1),
+          legend.position = "right") +
+    labs(title = "Figure 4: Usage of Register Pathways for All Timestamps",
+         subtitle = "Data from .vcd files 'alu_add_sub'",
+         x = "Register Prefix",
+         y = "Percent of Total Usage")
+
+ggplotly(p, tooltip = "text") %>%
+  layout(
+    annotations = list(
+      list(
+        text = "Data from .vcd file 'alu_add_sub'",
+        x = 0,
+        y = 1.035,
+        xref = "paper",
+        yref = "paper",
+        showarrow = FALSE,
+        xanchor = "left"
+      )
+    )
+  )
+```
+
+# Figure 5
+
+## create graphing function
+
+```{r}
+prefix_3d_viz_2vcd <- function(file_location) {
+  
+  # make sure the vcd2df file is loaded
+  if (!exists("vcd2df_altered", envir = .GlobalEnv)) {
+    stop("Please make sure the vcd2df_altered function is loaded into your environment.")
+  }
+  
+  # turn the folder of .vcd files into .df 
+  files <- list.files(file_location, full.names = TRUE)
+  
+  # check that the three required columns are present for all files
+  required_cols <- c("register", "timestamp", "value")
+  
+  # create a function that processes each individual file
+  process_file <- function(file) {
+
+    df <- vcd2df_altered(file, "long")
+  
+    if (!all(required_cols %in% names(df))) {
+        stop("One file is missing required columns: register, timestamp, value")
+    }
+    
+    
+    ## within this fn create the dfs (one for % usage of all registers which is used to find mean usage for prefix registers)
+    df_viz <- df %>%
+      mutate(n_timestamp = n_distinct(timestamp)) %>%
+      filter(value != 0) %>%
+      group_by(register) %>%
+      mutate(n_value_change = n(),
+             activity = n_value_change / n_timestamp) %>%
+      distinct(register, activity) %>%
+      mutate(prefix = sub("_.*", "", register)) %>%
+      group_by(prefix) %>%
+      summarise(mean = mean(activity),
+                std = ifelse(n() > 1, sd(activity), 0),
+                n = n(),
+                .groups = "drop") %>%
+      filter(std > 0.1)
+
+    return(df_viz)
+  }
+  
+  results <- lapply(files, process_file)
+  
+  names(results) <- tools::file_path_sans_ext(basename(files))
+  
+  combined <- bind_rows(results, .id = "source")
+
+  ### now graph the data
+  
+  plot_ly(
+    combined,
+    x = ~seq_along(prefix),
+    y = ~mean,
+    z = ~std,
+    type = "scatter3d",
+    mode = "markers+text",
+    text = ~prefix,
+    color = ~source
+) %>%
+  layout(
+    title = list(
+      text = "Figure 5: 3-axis Scatterplot",
+      y = 0.95,
+      x = 0.5,
+      xanchor = "center",
+      yanchor = "top"
+    ),
+  scene = list(
+    xaxis = list(title = "Prefix"),
+    yaxis = list(title = "Std. Deviation"),
+    zaxis = list(title = "Mean"),
+    bgcolor = "lightgrey"
+    )
+  )
+  
+  }
+```
+
+
+## visualize data
+
+```{r}
+prefix_3d_viz_2vcd("C:/Users/marin/OneDrive/Desktop/Research Articles/Marianela/2_vcds")
+```
+
+
+
+# Figure 6
+
+## create graphing function
+
+```{r}
+subgroup_3d_viz_all_vcd <- function(file_location) {
+  
+  # make sure the vcd2df file is loaded
+  if (!exists("vcd2df_altered", envir = .GlobalEnv)) {
+    stop("Please make sure the vcd2df_altered function is loaded into your environment.")
+  }
+  
+  # turn the folder of .vcd files into .df 
+  files <- list.files(file_location, full.names = TRUE)
+  
+  # check that the three required columns are present for all files
+  required_cols <- c("register", "timestamp", "value")
+  
+  # create a function that processes each individual file
+  process_file <- function(file) {
+
+    df <- vcd2df_altered(file, "long")
+  
+    if (!all(required_cols %in% names(df))) {
+        stop("One file is missing required columns: register, timestamp, value")
+    }
+    
+    
+    ## within this fn create the dfs (one for % usage of all registers which is used to find mean usage for prefix registers)
+    df_viz <- df %>%
+      mutate(n_timestamp = n_distinct(timestamp)) %>%
+      filter(value != 0) %>%
+      group_by(register) %>%
+      mutate(n_value_change = n(),
+             activity = n_value_change / n_timestamp) %>%
+      distinct(register, activity) %>%
+      mutate(prefix = sub("_.*", "", register)) %>%
+      group_by(prefix) %>%
+      mutate(mean = mean(activity),
+             std = ifelse(n() > 1, round(sd(activity), 4), 0),
+             n = n(),
+             subgroup = sub(".*_([^_]+).*", "\\1", register),
+             activity = round(activity, 4)) %>%
+      distinct(prefix, activity, subgroup, std) %>%
+      filter(std > 0.1)
+
+    return(df_viz)
+  }
+  
+  results <- lapply(files, process_file)
+  
+  names(results) <- tools::file_path_sans_ext(basename(files))
+  
+  combined <- bind_rows(results, .id = "source")
+
+  ### now graph the data
+  
+  # identify structure
+  prefix_levels <- sort(unique(combined$prefix))
+  source_levels <- unique(combined$source)
+  
+  n_prefix <- length(prefix_levels)
+  n_source <- length(source_levels)
+  
+  # generate palettes for each source automatically
+  palette_list <- brewer.pal(min(max(n_source, 3), 8), "Set1")
+  if (n_source > 8) {
+    palette_list <- colorRampPalette(palette_list)(n_source)
+  }
+  
+  # map source -> base palette
+  source_colors <- setNames(palette_list, source_levels)
+  
+  combined <- combined %>%
+    mutate(
+      prefix_id = match(prefix, prefix_levels)
+    )
+  
+  combined$color <- mapply(
+    function(src, pid) {
+  
+      base_col <- source_colors[[src]]
+  
+      # create light-to-dark variation per prefix
+      ramp <- colorRampPalette(c("white", base_col, "black"))
+  
+      ramp(n_prefix)[pid]
+    },
+    combined$source,
+    combined$prefix_id
+  )
+
+  
+  plot_ly(
+    combined,
+    x = ~seq_along(prefix),
+    y = ~activity,
+    z = ~std,
+    type = "scatter3d",
+    mode = "markers",
+    color = ~I(color),
+    symbol = ~source,
+    text = ~paste(
+      "Dataset:", source,
+      "<br>Prefix:", prefix,
+      "<br>Activity:", activity,
+      "<br>Std:", std),
+    hoverinfo = "text",
+    marker = list(opacity = 0.8)) %>%
+    layout(
+    title = list(
+      text = "Figure 6: 3-axis Scatterplot Subgroups",
+      y = 0.95,
+      x = 0.5,
+      xanchor = "center",
+      yanchor = "top"
+    ),
+  scene = list(
+    xaxis = list(title = "Prefix"),
+    yaxis = list(title = "Std. Deviation"),
+    zaxis = list(title = "Mean"),
+    bgcolor = "lightgrey"
+      )
+    )
+  }
+```
+
+
+## visualize data
+
+```{r}
+subgroup_3d_viz_all_vcd("C:/Users/marin/OneDrive/Desktop/Research Articles/Marianela/test_vcds")
+```
+
